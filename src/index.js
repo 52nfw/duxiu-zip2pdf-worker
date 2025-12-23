@@ -48,6 +48,9 @@ export default {
                 case '/list':
                     return await handleList(env, corsHeaders);
 
+                case '/cleanup':
+                    return await handleCleanup(env, corsHeaders);
+
                 default:
                     return new Response('Not found', { status: 404, headers: corsHeaders });
             }
@@ -293,6 +296,29 @@ function handleHomePage(corsHeaders) {
     .feature-icon { font-size: 30px; margin-bottom: 8px; }
     .feature-title { color: #667eea; font-weight: 600; margin-bottom: 5px; font-size: 0.9em; }
     .feature-desc { color: #666; font-size: 0.8em; }
+    .disclaimer {
+      margin-top: 30px;
+      padding: 20px;
+      background: #fff9e6;
+      border-left: 4px solid #ffc107;
+      border-radius: 8px;
+      font-size: 0.85em;
+      color: #856404;
+    }
+    .disclaimer-title {
+      font-weight: 700;
+      margin-bottom: 10px;
+      color: #d39e00;
+      font-size: 1.1em;
+    }
+    .disclaimer-content {
+      line-height: 1.6;
+      margin-bottom: 8px;
+    }
+    .disclaimer-highlight {
+      color: #d39e00;
+      font-weight: 600;
+    }
     @media (max-width: 768px) {
       .container { padding: 25px; }
       h1 { font-size: 2em; }
@@ -360,6 +386,25 @@ function handleHomePage(corsHeaders) {
         <div class="feature-icon">📤</div>
         <div class="feature-title">分块上传</div>
         <div class="feature-desc">大文件支持</div>
+      </div>
+    </div>
+
+    <div class="disclaimer">
+      <div class="disclaimer-title">⚠️ 免责声明与使用须知</div>
+      <div class="disclaimer-content">
+        <strong class="disclaimer-highlight">1. 文件存储时限：</strong>转换完成的PDF文件将在服务器上保存<strong class="disclaimer-highlight">24小时</strong>后自动删除，请及时下载保存。
+      </div>
+      <div class="disclaimer-content">
+        <strong class="disclaimer-highlight">2. 版权声明：</strong>本工具仅供个人学习研究使用。请确保您有权使用所上传的文件，并遵守相关版权法律法规。
+      </div>
+      <div class="disclaimer-content">
+        <strong class="disclaimer-highlight">3. 隐私保护：</strong>上传的文件仅用于转换处理，24小时后自动删除。我们不会保存、分享或用于其他目的。
+      </div>
+      <div class="disclaimer-content">
+        <strong class="disclaimer-highlight">4. 使用限制：</strong>请勿上传违法、侵权或不当内容。违规使用造成的法律责任由用户自行承担。
+      </div>
+      <div class="disclaimer-content">
+        <strong class="disclaimer-highlight">5. 服务免责：</strong>本服务按"现状"提供，不保证100%成功转换。因使用本服务产生的任何问题，使用者需自行承担风险。
       </div>
     </div>
   </div>
@@ -861,8 +906,14 @@ async function handleConvert(request, env, corsHeaders) {
         const pdfBytes = await pdfDoc.save();
         const pdfKey = key.replace('uploads/', 'pdfs/').replace(/\.(zip|uvz|cbz)$/i, '.pdf');
 
+        // 保存PDF到R2，添加24小时过期元数据
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24小时后
         await env.BUCKET.put(pdfKey, pdfBytes, {
-            httpMetadata: { contentType: 'application/pdf' }
+            httpMetadata: { contentType: 'application/pdf' },
+            customMetadata: {
+                expiresAt: expiresAt.toISOString(),
+                createdAt: new Date().toISOString()
+            }
         });
 
         return new Response(JSON.stringify({
@@ -872,6 +923,8 @@ async function handleConvert(request, env, corsHeaders) {
             hasPassword: usedPassword !== null,
             password: usedPassword,
             hasCover: hasCover,
+            expiresAt: expiresAt.toISOString(),
+            expiresIn: '24小时',
             coverInfo: {
                 hasFrontCover: cover !== null,
                 hasBackCover: backCover !== null,
@@ -893,7 +946,7 @@ async function handleConvert(request, env, corsHeaders) {
 }
 
 /**
- * 处理文件下载
+ * 处理文件下载（检查过期时间）
  */
 async function handleDownload(request, env, corsHeaders) {
     try {
@@ -906,7 +959,18 @@ async function handleDownload(request, env, corsHeaders) {
 
         const object = await env.BUCKET.get(key);
         if (!object) {
-            return new Response('File not found', { status: 404 });
+            return new Response('File not found or expired', { status: 404 });
+        }
+
+        // 检查文件是否过期
+        if (object.customMetadata && object.customMetadata.expiresAt) {
+            const expiresAt = new Date(object.customMetadata.expiresAt);
+            if (new Date() > expiresAt) {
+                // 文件已过期，删除并返回404
+                await env.BUCKET.delete(key);
+                console.log(`Deleted expired file: ${key}`);
+                return new Response('File has expired (24 hours)', { status: 410 });
+            }
         }
 
         const filename = key.split('/').pop();
@@ -916,6 +980,7 @@ async function handleDownload(request, env, corsHeaders) {
                 ...corsHeaders,
                 'Content-Type': 'application/pdf',
                 'Content-Disposition': `attachment; filename="${filename}"`,
+                'X-Expires-At': object.customMetadata?.expiresAt || 'unknown'
             }
         });
     } catch (error) {
@@ -951,6 +1016,44 @@ async function handleList(env, corsHeaders) {
         return new Response(JSON.stringify({ error: error.message }), {
             status: 500,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+    }
+}
+
+/**
+ * ���������ļ���24Сʱ��
+ */
+async function handleCleanup(env, corsHeaders) {
+    try {
+        const now = new Date();
+        let deletedCount = 0, checkedCount = 0;
+        const uploadsList = await env.BUCKET.list({ prefix: 'uploads/' });
+        for (const obj of uploadsList.objects) {
+            checkedCount++;
+            const object = await env.BUCKET.get(obj.key);
+            if (object && object.customMetadata && object.customMetadata.expiresAt) {
+                const expiresAt = new Date(object.customMetadata.expiresAt);
+                if (now > expiresAt) { await env.BUCKET.delete(obj.key); deletedCount++; }
+            }
+        }
+        const pdfsList = await env.BUCKET.list({ prefix: 'pdfs/' });
+        for (const obj of pdfsList.objects) {
+            checkedCount++;
+            const object = await env.BUCKET.get(obj.key);
+            if (object && object.customMetadata && object.customMetadata.expiresAt) {
+                const expiresAt = new Date(object.customMetadata.expiresAt);
+                if (now > expiresAt) { await env.BUCKET.delete(obj.key); deletedCount++; }
+            } else if (object && !object.customMetadata) {
+                const uploaded = new Date(obj.uploaded);
+                if (now - uploaded > 24 * 60 * 60 * 1000) { await env.BUCKET.delete(obj.key); deletedCount++; }
+            }
+        }
+        return new Response(JSON.stringify({ success: true, checked: checkedCount, deleted: deletedCount }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+    } catch (error) {
+        return new Response(JSON.stringify({ error: error.message }), {
+            status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
     }
 }
