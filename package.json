@@ -16,7 +16,7 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
-    "wrangler": "^3.78.0"
+    "wrangler": "^4.56.0"
   },
   "dependencies": {
     "fflate": "^0.8.2",
