@@ -1,0 +1,8 @@
+name = "duxiu-zip2pdf-worker"
+main = "src/index.js"
+compatibility_date = "2024-12-01"
+
+# R2 存储桶绑定
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "duxiu-pdf-storage"
