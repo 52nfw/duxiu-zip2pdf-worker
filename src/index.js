@@ -87,6 +87,19 @@ function handleHomePage(corsHeaders) {
     .disclaimer { margin-top: 25px; padding: 15px; background: #fff9e6; border-left: 4px solid #ffc107; border-radius: 8px; font-size: 0.85em; color: #856404; }
     .disclaimer-title { font-weight: 700; color: #d39e00; margin-bottom: 10px; }
     .disclaimer p { margin: 8px 0; line-height: 1.5; }
+    .log-container { display: none; margin-top: 20px; }
+    .log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .log-title { font-weight: 600; color: #667eea; }
+    .log-toggle { background: #667eea; color: white; border: none; padding: 5px 15px; border-radius: 6px; cursor: pointer; font-size: 0.85em; }
+    .log-box { background: #1e1e1e; color: #00ff00; padding: 15px; border-radius: 12px; font-family: 'Consolas', 'Monaco', monospace; font-size: 0.85em; max-height: 300px; overflow-y: auto; line-height: 1.6; }
+    .log-box::-webkit-scrollbar { width: 8px; }
+    .log-box::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+    .log-line { margin: 2px 0; }
+    .log-time { color: #888; }
+    .log-info { color: #00ff00; }
+    .log-warn { color: #ffcc00; }
+    .log-error { color: #ff6b6b; }
+    .log-success { color: #00ff88; }
   </style>
 </head>
 <body>
@@ -118,6 +131,13 @@ function handleHomePage(corsHeaders) {
       <div class="result-text" id="resultText">转换成功！</div>
       <button class="btn download-btn" id="downloadBtn">下载PDF文件</button>
     </div>
+    <div class="log-container" id="logContainer">
+      <div class="log-header">
+        <span class="log-title">📋 转换日志</span>
+        <button class="log-toggle" onclick="toggleLog()">收起</button>
+      </div>
+      <div class="log-box" id="logBox"></div>
+    </div>
     <div class="features">
       <div class="feature"><div class="feature-icon">⚡</div><div class="feature-title">快速转换</div></div>
       <div class="feature"><div class="feature-icon">🔓</div><div class="feature-title">自动解密</div></div>
@@ -144,7 +164,34 @@ function handleHomePage(corsHeaders) {
     const downloadBtn = document.getElementById('downloadBtn');
     const errorBox = document.getElementById('errorBox');
     const passwordBox = document.getElementById('passwordBox');
-    let selectedFile = null, uploadedKey = null;
+    const logContainer = document.getElementById('logContainer');
+    const logBox = document.getElementById('logBox');
+    let selectedFile = null, uploadedKey = null, logExpanded = true;
+    
+    function addLog(msg, type = 'info') {
+      logContainer.style.display = 'block';
+      const time = new Date().toLocaleTimeString('zh-CN', {hour12: false});
+      const typeClass = 'log-' + type;
+      const line = document.createElement('div');
+      line.className = 'log-line';
+      line.innerHTML = '<span class="log-time">[' + time + ']</span> <span class="' + typeClass + '">' + msg + '</span>';
+      logBox.appendChild(line);
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+    function clearLog() {
+      logBox.innerHTML = '';
+    }
+    function toggleLog() {
+      const btn = document.querySelector('.log-toggle');
+      if (logExpanded) {
+        logBox.style.display = 'none';
+        btn.textContent = '展开';
+      } else {
+        logBox.style.display = 'block';
+        btn.textContent = '收起';
+      }
+      logExpanded = !logExpanded;
+    }
     uploadArea.onclick = () => fileInput.click();
     fileInput.onchange = (e) => selectFile(e.target.files[0]);
     uploadArea.ondragover = (e) => { e.preventDefault(); uploadArea.classList.add('dragging'); };
@@ -167,37 +214,58 @@ function handleHomePage(corsHeaders) {
       progressBox.style.display = 'block';
       resultBox.style.display = 'none';
       hideError(); passwordBox.style.display = 'none';
+      clearLog();
+      addLog('🚀 开始处理文件: ' + selectedFile.name, 'info');
+      addLog('📊 文件大小: ' + (selectedFile.size/1024/1024).toFixed(2) + ' MB', 'info');
       try {
         updateProgress(10, '正在上传...');
+        addLog('⬆️ 开始上传文件...', 'info');
         const formData = new FormData();
         formData.append('file', selectedFile);
         const uploadRes = await fetch('/upload', { method: 'POST', body: formData });
         if (!uploadRes.ok) throw new Error('上传失败');
         const uploadData = await uploadRes.json();
         uploadedKey = uploadData.key;
+        addLog('✅ 上传成功! Key: ' + uploadedKey.substring(0, 30) + '...', 'success');
         updateProgress(40, '上传完成，正在转换...');
+        addLog('🔄 开始解压和转换...', 'info');
+        if (customPwd) addLog('🔑 使用手动密码: ' + customPwd, 'warn');
         const headers = { 'Content-Type': 'application/json' };
         if (customPwd) headers['X-Custom-Password'] = customPwd;
         const convertRes = await fetch('/convert', { method: 'POST', headers, body: JSON.stringify({ key: uploadedKey }) });
         const contentType = convertRes.headers.get('content-type') || '';
         if (!contentType.includes('application/json')) {
           const text = await convertRes.text();
+          addLog('❌ 服务器返回非JSON响应', 'error');
           throw new Error('服务器错误: ' + text.substring(0, 100));
         }
         const result = await convertRes.json();
         if (!convertRes.ok) {
-          if (result.needPassword) { passwordBox.style.display = 'block'; updateProgress(50, '需要密码'); convertBtn.disabled = false; return; }
+          if (result.needPassword) {
+            addLog('🔒 需要密码（已尝试391个常用密码）', 'warn');
+            passwordBox.style.display = 'block';
+            updateProgress(50, '需要密码');
+            convertBtn.disabled = false;
+            return;
+          }
+          addLog('❌ 转换失败: ' + result.error, 'error');
           throw new Error(result.error || '转换失败');
         }
+        addLog('📖 提取图片完成: ' + result.pages + ' 页', 'success');
+        if (result.hasPassword) addLog('🔓 已自动解密 (密码: ' + result.password + ')', 'success');
+        if (result.hasCover) addLog('📚 已识别封面/封底', 'success');
+        addLog('📄 PDF生成完成!', 'success');
+        addLog('⏰ 文件将在24小时后自动删除', 'warn');
         updateProgress(100, '完成！');
         resultBox.style.display = 'block';
         let msg = '转换成功！共 ' + result.pages + ' 页';
         if (result.hasPassword) msg += '<br><small>已解密（密码: ' + result.password + '）</small>';
         if (result.hasCover) msg += '<br><small>✓ 已识别封面封底</small>';
         resultText.innerHTML = msg;
-        downloadBtn.onclick = () => { window.location.href = '/download?key=' + result.pdfKey; };
+        downloadBtn.onclick = () => { addLog('⬇️ 开始下载PDF...', 'info'); window.location.href = '/download?key=' + result.pdfKey; };
         progressBox.style.display = 'none';
       } catch (err) {
+        addLog('❌ 错误: ' + err.message, 'error');
         showError(err.message);
         convertBtn.disabled = false;
       }
@@ -205,6 +273,7 @@ function handleHomePage(corsHeaders) {
     function retryWithPassword() {
       const pwd = document.getElementById('manualPassword').value.trim();
       if (!pwd) { alert('请输入密码'); return; }
+      addLog('🔑 使用手动输入的密码重试...', 'warn');
       startConvert(pwd);
     }
     function updateProgress(pct, msg) { progressFill.style.width = pct + '%'; status.textContent = msg; }
