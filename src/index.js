@@ -1,4 +1,4 @@
-import { unzip, unzipSync } from 'fflate';
+﻿import { unzip, unzipSync } from 'fflate';
 import { PDFDocument } from 'pdf-lib';
 import { COMMON_PASSWORDS } from './passwords.js';
 
@@ -802,45 +802,39 @@ async function handleConvert(request, env, corsHeaders) {
             }
         }
 
-        // 提取并分类图片文件
-        const coverFile = null;  // cov001
-        const backCoverFile = null;  // cov002
+        // 提取并分类图片文件（支持子文件夹）
         const imageFiles = [];
         let hasCover = false;
         let cover = null;
         let backCover = null;
 
-        for (const [filename, data] of Object.entries(files)) {
-            const lowerName = filename.toLowerCase();
-            const baseName = filename.replace(/\\/g, '/').split('/').pop().toLowerCase();
-
-            // 检查是否是图片
-            const isImage = lowerName.endsWith('.pdg') || lowerName.endsWith('.jpg') ||
-                lowerName.endsWith('.jpeg') || lowerName.endsWith('.png') ||
-                lowerName.endsWith('.bmp') || lowerName.endsWith('.tif') ||
-                lowerName.endsWith('.tiff');
-
+        for (const [fullPath, data] of Object.entries(files)) {
+            if (data.length === 0 || fullPath.endsWith('/') || fullPath.endsWith('\\')) continue;
+            const lowerPath = fullPath.toLowerCase();
+            const isImage = lowerPath.endsWith('.pdg') || lowerPath.endsWith('.jpg') ||
+                lowerPath.endsWith('.jpeg') || lowerPath.endsWith('.png') ||
+                lowerPath.endsWith('.bmp') || lowerPath.endsWith('.tif') ||
+                lowerPath.endsWith('.tiff') || lowerPath.endsWith('.gif');
             if (!isImage) continue;
-
-            // 检查封面封底
-            if (baseName.includes('cov001') || baseName.startsWith('cov001')) {
-                cover = { filename, data, isCover: true };
+            const fileName = fullPath.replace(/\\/g, '/').split('/').pop();
+            const lowerFileName = fileName.toLowerCase();
+            if (lowerFileName.includes('cov001') || lowerFileName.startsWith('cov001')) {
+                cover = { filename: fullPath, data, isCover: true };
                 hasCover = true;
-                console.log('检测到封面:', filename);
-            } else if (baseName.includes('cov002') || baseName.startsWith('cov002')) {
-                backCover = { filename, data, isBackCover: true };
+            } else if (lowerFileName.includes('cov002') || lowerFileName.startsWith('cov002')) {
+                backCover = { filename: fullPath, data, isBackCover: true };
                 hasCover = true;
-                console.log('检测到封底:', filename);
             } else {
-                imageFiles.push({ filename, data });
+                imageFiles.push({ filename: fullPath, data });
             }
         }
 
         if (imageFiles.length === 0 && !cover && !backCover) {
-            return new Response(JSON.stringify({ error: 'ZIP文件中没有找到图片' }), {
+            return new Response(JSON.stringify({ error: 'ZIP中没有找到图片', hint: '确保包含PDG/JPG/PNG格式' }), {
                 status: 400,
                 headers: { ...corsHeaders, 'Content-Type': 'application/json' }
             });
+        }
         }
 
         // 自然排序内容页
@@ -1021,7 +1015,7 @@ async function handleList(env, corsHeaders) {
 }
 
 /**
- * ���������ļ���24Сʱ��
+ * ��������ļ���24Сʱ��
  */
 async function handleCleanup(env, corsHeaders) {
     try {
